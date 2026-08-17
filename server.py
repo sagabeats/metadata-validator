@@ -7,9 +7,11 @@ Run:
     .\.venv\Scripts\python.exe server.py                 # http://127.0.0.1:8000
     .\.venv\Scripts\python.exe server.py --port 9000 --host 0.0.0.0
 
-Endpoints (all POST bodies are multipart/form-data with a `file` field):
+Endpoints (all POST bodies are multipart/form-data with a `file` field,
+except /check/batch which takes a repeated `files` field):
     GET  /health          liveness + version
     POST /check           -> JSON verdict + findings + metadata dump
+    POST /check/batch     -> same, for many images in one request
     POST /clean           -> the stripped image bytes (image/png etc.)
     POST /clean/json      -> JSON with the stripped image base64-encoded
 
@@ -26,6 +28,7 @@ import secrets
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
@@ -33,6 +36,10 @@ import ai_metadata_check as checker
 
 API_KEY = os.environ.get("API_KEY", "")
 MAX_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", 25 * 1024 * 1024))
+# Ceiling on one /check/batch call. Each image is read fully into memory before
+# it is analysed, so this bounds peak memory at roughly MAX_BYTES per request,
+# not MAX_BYTES * MAX_BATCH_FILES -- images are processed one at a time.
+MAX_BATCH_FILES = int(os.environ.get("MAX_BATCH_FILES", 20))
 ALLOWED_ORIGINS = [o for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o]
 
 MIME_BY_FORMAT = {"JPEG": "image/jpeg", "PNG": "image/png", "WebP": "image/webp"}
@@ -100,6 +107,52 @@ async def check(_: Auth, file: Annotated[UploadFile, File()],
                                include_content=include_content)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+
+@app.post("/check/batch")
+async def check_batch(
+    _: Auth,
+    files: Annotated[list[UploadFile], File()],
+    include_content: Annotated[bool, Form()] = True,
+) -> dict:
+    """Analyse many images in one request.
+
+    One bad image never sinks the batch: each entry carries its own ok/error,
+    and the response is 200 as long as the request itself was well-formed. The
+    caller matches results back by `index`, which mirrors the order the files
+    were sent in -- filenames are not unique enough to key on.
+    """
+    if not files:
+        raise HTTPException(400, "no files")
+    if len(files) > MAX_BATCH_FILES:
+        raise HTTPException(413, f"batch exceeds {MAX_BATCH_FILES} files")
+
+    results: list[dict] = []
+    for index, file in enumerate(files):
+        name = file.filename or f"upload-{index}"
+        entry: dict = {"index": index, "filename": name}
+
+        try:
+            raw = await read_upload(file)
+        except HTTPException as exc:
+            results.append({**entry, "ok": False, "error": str(exc.detail)})
+            continue
+
+        try:
+            # analyze() is sync and CPU-bound; off the event loop it goes, so a
+            # 20-image batch cannot stall /health and the other endpoints.
+            entry["result"] = await run_in_threadpool(
+                checker.analyze, raw, name, include_content=include_content
+            )
+            results.append({**entry, "ok": True})
+        except ValueError as exc:
+            results.append({**entry, "ok": False, "error": str(exc)})
+
+    return {
+        "count": len(results),
+        "ok_count": sum(1 for r in results if r["ok"]),
+        "results": results,
+    }
 
 
 @app.post("/clean")

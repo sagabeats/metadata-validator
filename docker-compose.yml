@@ -9,10 +9,12 @@
 #   docker compose up -d
 #   curl -s https://$METADATA_DOMAIN/health
 #
-# The DNS record for METADATA_DOMAIN must be "DNS only" (grey cloud) in
-# Cloudflare. Traefik issues certs with the TLS-ALPN-01 challenge, and a
-# proxied (orange cloud) record terminates TLS at Cloudflare, so the challenge
-# never reaches Traefik and issuance fails.
+# DNS: a CNAME to the apex, matching how www/support are already set up --
+#   metadata  CNAME  majorsaleshub.com
+# It must stay "DNS only" (grey cloud) in Cloudflare. Traefik issues certs with
+# the TLS-ALPN-01 challenge, and a proxied record terminates TLS at Cloudflare,
+# so the challenge never reaches Traefik and issuance fails. Orange-clouding the
+# apex breaks every subdomain CNAMEd to it at once.
 
 services:
   metadata-validator:
