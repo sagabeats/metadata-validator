@@ -1,0 +1,65 @@
+# Paste this service into the `services:` section of your VPS compose file.
+# It follows the conventions already in that stack: ghcr image + watchtower
+# label, `expose` rather than `ports`, memory limit, and the shared external
+# `project-network`.
+#
+# Add to your .env:
+#   METADATA_API_KEY=<long random string>
+#   METADATA_DOMAIN=metadata.majorsaleshub.com   # only if exposing publicly
+
+services:
+  metadata-validator:
+    image: ghcr.io/sagabeats/metadata-validator:prod
+    restart: always
+    environment:
+      API_KEY: "${METADATA_API_KEY}"
+      MAX_UPLOAD_BYTES: "26214400"
+      WEB_CONCURRENCY: "2"
+    expose:
+      - "8000"
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+      # ----------------------------------------------------------------------
+      # DEFAULT: no Traefik router. The service stays off the public internet
+      # and crm-web reaches it in-network at http://metadata-validator:8000.
+      # That is the right setup when Next.js runs on this same VPS -- nothing
+      # to expose, nothing to rate-limit, no certificate to manage.
+      #
+      # Uncomment below ONLY if something outside the VPS must call it
+      # (Next.js on Vercel, a webhook from another host, etc.).
+      # ----------------------------------------------------------------------
+      # - "traefik.enable=true"
+      # - "traefik.http.routers.metadata.rule=Host(`${METADATA_DOMAIN}`)"
+      # - "traefik.http.routers.metadata.entrypoints=websecure"
+      # - "traefik.http.routers.metadata.tls.certresolver=myresolver"
+      # - "traefik.http.services.metadata.loadbalancer.server.port=8000"
+      # - "traefik.http.routers.metadata.middlewares=crowdsec@docker,metadatalimit@docker"
+      #
+      # Uploads are far heavier than page views, so this gets its own limiter
+      # rather than reusing the 100/min `ratelimit` defined on crm-web.
+      # - "traefik.http.middlewares.metadatalimit.ratelimit.average=30"
+      # - "traefik.http.middlewares.metadatalimit.ratelimit.period=1m"
+      # - "traefik.http.middlewares.metadatalimit.ratelimit.burst=10"
+      #
+      # Traefik defaults to unlimited request bodies; cap them so a large
+      # upload cannot exhaust memory before the app's own check runs.
+      # - "traefik.http.middlewares.metadatabody.buffering.maxRequestBodyBytes=26214400"
+      # - "traefik.http.middlewares.metadatabody.buffering.memRequestBodyBytes=2097152"
+
+# Your existing file already declares this; shown for reference only.
+# networks:
+#   default:
+#     name: project-network
+#     external: true

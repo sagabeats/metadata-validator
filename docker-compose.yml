@@ -1,0 +1,23 @@
+# Standalone stack -- for local testing and for running the service on its own.
+# To fold it into your existing VPS stack instead, paste the block from
+# docker-compose.traefik.yml into that file's `services:` section.
+#
+#   docker compose up --build
+#   curl -s localhost:8000/health
+
+services:
+  metadata-validator:
+    build: .
+    image: ghcr.io/sagabeats/metadata-validator:prod
+    restart: always
+    environment:
+      # Leave unset to run open (localhost only). Set it for anything else.
+      API_KEY: "${API_KEY:-}"
+      MAX_UPLOAD_BYTES: "${MAX_UPLOAD_BYTES:-26214400}"
+      WEB_CONCURRENCY: "${WEB_CONCURRENCY:-2}"
+    ports:
+      - "127.0.0.1:8000:8000"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
