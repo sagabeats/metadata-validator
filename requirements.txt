@@ -1,0 +1,4 @@
+# AI metadata checker -- runtime dependencies
+# Pillow is used only for the EXIF tag table and the non-JPEG/PNG/WebP fallback
+# strip path. Container parsing and stripping are pure stdlib byte surgery.
+Pillow>=11.0

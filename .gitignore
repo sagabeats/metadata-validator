@@ -1,0 +1,16 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Tool output
+*.bak
+*.clean.*
+*.tmp
