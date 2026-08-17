@@ -1,23 +1,73 @@
-# Standalone stack -- for local testing and for running the service on its own.
-# To fold it into your existing VPS stack instead, paste the block from
-# docker-compose.traefik.yml into that file's `services:` section.
+# Deploy stack for the VPS. Runs as its own compose project but joins the
+# existing `project-network`, so the Traefik already running there terminates
+# TLS and routes to it -- nothing is published on the host directly.
 #
-#   docker compose up --build
-#   curl -s localhost:8000/health
+# Set in .env next to this file:
+#   API_KEY=<long random string>          # openssl rand -hex 32
+#   METADATA_DOMAIN=metadata.majorsaleshub.com
+#
+#   docker compose up -d
+#   curl -s https://$METADATA_DOMAIN/health
+#
+# The DNS record for METADATA_DOMAIN must be "DNS only" (grey cloud) in
+# Cloudflare. Traefik issues certs with the TLS-ALPN-01 challenge, and a
+# proxied (orange cloud) record terminates TLS at Cloudflare, so the challenge
+# never reaches Traefik and issuance fails.
 
 services:
   metadata-validator:
-    build: .
     image: ghcr.io/sagabeats/metadata-validator:prod
+    # Uncomment to build from source here instead of pulling the published image.
+    # build: .
     restart: always
     environment:
-      # Leave unset to run open (localhost only). Set it for anything else.
-      API_KEY: "${API_KEY:-}"
+      # `:?` so the stack refuses to start unauthenticated -- this is reachable
+      # from the internet, unlike the old localhost-only setup.
+      API_KEY: "${API_KEY:?set API_KEY in .env before starting}"
       MAX_UPLOAD_BYTES: "${MAX_UPLOAD_BYTES:-26214400}"
       WEB_CONCURRENCY: "${WEB_CONCURRENCY:-2}"
-    ports:
-      - "127.0.0.1:8000:8000"
+      # Only needed if a browser calls the service directly. Server-side calls
+      # (a Next.js route handler, a Worker) ignore CORS entirely.
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-}"
+    # `expose`, not `ports`: reachable from Traefik on project-network, never
+    # from the host's public interface.
+    expose:
+      - "8000"
     deploy:
+      replicas: 1
       resources:
         limits:
           memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+      - "traefik.enable=true"
+      - "traefik.http.routers.metadata.rule=Host(`${METADATA_DOMAIN:-metadata.majorsaleshub.com}`)"
+      - "traefik.http.routers.metadata.entrypoints=websecure"
+      - "traefik.http.routers.metadata.tls.certresolver=myresolver"
+      - "traefik.http.services.metadata.loadbalancer.server.port=8000"
+      - "traefik.http.routers.metadata.middlewares=crowdsec@docker,metadatalimit@docker,metadatabody@docker"
+
+      # Uploads are far heavier than page views, so this gets its own limiter
+      # rather than reusing the 100/min `ratelimit` defined on crm-web.
+      - "traefik.http.middlewares.metadatalimit.ratelimit.average=30"
+      - "traefik.http.middlewares.metadatalimit.ratelimit.period=1m"
+      - "traefik.http.middlewares.metadatalimit.ratelimit.burst=10"
+
+      # Traefik streams request bodies with no size cap by default; bound them
+      # so a large upload cannot exhaust memory before the app's own check runs.
+      - "traefik.http.middlewares.metadatabody.buffering.maxRequestBodyBytes=26214400"
+      - "traefik.http.middlewares.metadatabody.buffering.memRequestBodyBytes=2097152"
+
+# The network Traefik, crm-api and crm-web already share. Declared external:
+# this project joins it, it does not create it.
+networks:
+  default:
+    name: project-network
+    external: true
