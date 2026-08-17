@@ -2,3 +2,8 @@
 # Pillow is used only for the EXIF tag table and the non-JPEG/PNG/WebP fallback
 # strip path. Container parsing and stripping are pure stdlib byte surgery.
 Pillow>=11.0
+
+# HTTP service (server.py) -- not needed if you only use the CLI
+fastapi>=0.115
+uvicorn[standard]>=0.32
+python-multipart>=0.0.9
